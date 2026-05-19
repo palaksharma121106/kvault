@@ -42,7 +42,7 @@ private:
         cout << "  [LRU evicted]: " << last.key << "\n";
     }
 
-    // Move a key to front of list (marks it as "recently used")
+    /// move accessed key to front (LRU update)
     void touch(list<Node>::iterator it) {
         lruList.splice(lruList.begin(), lruList, it);
     }
@@ -72,7 +72,7 @@ public:
         return cache[key]->value;
     }
 
-    // DEL key ────────────────────────────────────────────────────────────────
+    // DEL key(when capacity is reached) ────────────────────────────────────────────────────────────────
     string del(const string& key) {
         if (!cache.count(key)) return "0";
         lruList.erase(cache[key]);
@@ -123,7 +123,7 @@ public:
         int count = 0;
         for (auto& node : lruList) {
             if (!isExpired(node.key)) {
-                f << node.key << " " << node.value;
+                f << node.key << " | " << node.value;
                 if (expiry.count(node.key)) f << " " << expiry[node.key];
                 f << "\n";
                 count++;
@@ -192,7 +192,7 @@ int main() {
 
         istringstream ss(line);
         string cmd; ss >> cmd;
-        for (auto& c : cmd) c = toupper(c);
+        for (auto& c : cmd) c = std::toupper(c);
 
         if (cmd == "EXIT" || cmd == "QUIT") { cout << "Goodbye!\n"; break; }
         else if (cmd == "HELP")   { help(); }
