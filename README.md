@@ -9,7 +9,7 @@ Was working on a database project (RetailSphere) and kept running into the same 
 
 Instead of just installing Redis and using it like a black box, I wanted to actually understand *how* it works internally. So I built my own version of the core idea in C++.
 
-Not trying to replace Redis (lol). Just wanted to learn by building.
+Not trying to replace Redis. Just wanted to learn by building.
 
 ---
 
