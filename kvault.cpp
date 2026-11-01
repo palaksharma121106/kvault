@@ -11,6 +11,8 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <csignal>
+#include <thread>
+#include <mutex>
 
 using namespace std;
 using namespace chrono;
@@ -255,6 +257,36 @@ bool sendAll(int fd, const string& data) {
     return true;
 }
 
+// Ek client ko handle karta hai. Har client ke liye alag thread me chalta hai.
+void handleClient(int clientFd, KVault& store, mutex& storeMutex) {
+    string buffer;
+    char tmp[1024];
+    bool quit = false;
+
+    while (!quit) {
+        ssize_t n = recv(clientFd, tmp, sizeof(tmp), 0);
+        if (n <= 0) break;
+        buffer.append(tmp, n);
+
+        size_t pos;
+        while (!quit && (pos = buffer.find('\n')) != string::npos) {
+            string line = buffer.substr(0, pos);
+            buffer.erase(0, pos + 1);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty()) continue;
+
+            string reply;
+            {
+                lock_guard<mutex> lock(storeMutex);   // yahan se lock
+                reply = execute(store, line, quit);
+            }                                         // yahan lock khul gaya
+            if (!sendAll(clientFd, reply + "\n")) quit = true;
+        }
+    }
+    close(clientFd);
+    cout << "Client disconnected\n";
+}
+
 void runServer(KVault& store, int port) {
     signal(SIGPIPE, SIG_IGN);   // client beech me kat jaye to server crash na ho
 
@@ -282,35 +314,16 @@ void runServer(KVault& store, int port) {
     cout << "KVault server listening on port " << port << "\n";
 
     // 5. clients ka intezaar (ek time pe ek client)
+       mutex storeMutex;   // sab clients ke liye ek hi lock
+
     while (true) {
         int clientFd = accept(serverFd, nullptr, nullptr);
         if (clientFd < 0) { perror("accept"); continue; }
         cout << "Client connected\n";
 
-        string buffer;          
-        char tmp[1024];
-        bool quit = false;
-
-        while (!quit) {
-            ssize_t n = recv(clientFd, tmp, sizeof(tmp), 0);
-            if (n <= 0) break;              // 0 = client gaya, -1 = error
-            buffer.append(tmp, n);
-
-            // jab tak buffer me poori line (\n) hai, commands nikalte raho
-            size_t pos;
-            while (!quit && (pos = buffer.find('\n')) != string::npos) {
-                string line = buffer.substr(0, pos);
-                buffer.erase(0, pos + 1);
-                if (!line.empty() && line.back() == '\r') line.pop_back();
-                if (line.empty()) continue;
-
-                string reply = execute(store, line, quit);
-                if (!sendAll(clientFd, reply + "\n")) quit = true;
-            }
-        }
-        close(clientFd);
-        cout << "Client disconnected\n";
+        thread(handleClient, clientFd, ref(store), ref(storeMutex)).detach();
     }
+        
 }
 
 int main(int argc, char* argv[]) {
