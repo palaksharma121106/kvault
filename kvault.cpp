@@ -329,8 +329,10 @@ void runServer(KVault& store, int port) {
 int main(int argc, char* argv[]) {
     KVault store(100000);
 
-    if (argc > 1 && string(argv[1]) == "server") {
-        runServer(store, 6380);
+        if (argc > 1 && string(argv[1]) == "server") {
+        int port = (argc > 2) ? atoi(argv[2]) : 6380;
+        KVault serverStore(100000);
+        runServer(serverStore, port);
         return 0;
     }
     cout << "\n"
