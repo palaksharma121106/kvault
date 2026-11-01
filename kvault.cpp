@@ -5,6 +5,7 @@
 #include <fstream>
 #include <chrono>
 #include <sstream>
+#include <cctype>
 
 using namespace std;
 using namespace chrono;
@@ -39,7 +40,7 @@ private:
         cache.erase(last.key);
         expiry.erase(last.key);
         lruList.pop_back();
-        cout << "  [LRU evicted]: " << last.key << "\n";
+        cerr << "  [LRU evicted]: " << last.key << "\n";
     }
 
     /// move accessed key to front (LRU update)
@@ -50,6 +51,17 @@ private:
 public:
     KVault(int cap = 50) : capacity(cap) {}
 
+    // CLEAN — remove all expired keys, returns how many were removed ─────────
+    int cleanExpired() {
+        int removed = 0;
+        for (auto it = lruList.begin(); it != lruList.end(); ) {
+            string k = it->key;
+            ++it;                       // move on BEFORE deleting this node
+            if (isExpired(k)) { del(k); removed++; }
+        }
+        return removed;
+    }
+
     // SET key value ──────────────────────────────────────────────────────────
     string set(const string& key, const string& value) {
         if (cache.count(key)) {
@@ -57,7 +69,10 @@ public:
             touch(cache[key]);
             expiry.erase(key);
         } else {
-            if ((int)cache.size() >= capacity) evict();
+            if ((int)cache.size() >= capacity) {
+                cleanExpired();                          // free dead keys first
+                if ((int)cache.size() >= capacity) evict(); // still full → LRU
+            }
             lruList.push_front(Node(key, value));
             cache[key] = lruList.begin();
         }
@@ -72,7 +87,7 @@ public:
         return cache[key]->value;
     }
 
-    // DEL key(when capacity is reached) ────────────────────────────────────────────────────────────────
+    // DEL key ────────────────────────────────────────────────────────────────
     string del(const string& key) {
         if (!cache.count(key)) return "0";
         lruList.erase(cache[key]);
@@ -117,15 +132,15 @@ public:
     }
 
     // SAVE — write to disk (persistence) ─────────────────────────────────────
+    // File format, one key per line:  key | value | expiryTimestamp (0 = none)
     string save(const string& file = "kvault.db") {
         ofstream f(file);
         if (!f.is_open()) return "(error) cannot open file";
         int count = 0;
         for (auto& node : lruList) {
             if (!isExpired(node.key)) {
-                f << node.key << " | " << node.value;
-                if (expiry.count(node.key)) f << " " << expiry[node.key];
-                f << "\n";
+                f << node.key << " | " << node.value << " | "
+                  << (expiry.count(node.key) ? expiry[node.key] : 0) << "\n";
                 count++;
             }
         }
@@ -138,28 +153,36 @@ public:
         if (!f.is_open()) return "(error) kvault.db not found. Run SAVE first.";
         string line; int count = 0;
         while (getline(f, line)) {
-            istringstream ss(line);
-            string key, value; long long exp = 0;
-            ss >> key >> value;
+            size_t a = line.find(" | ");    // first separator  (after key)
+            size_t b = line.rfind(" | ");   // last separator   (before expiry)
+            if (a == string::npos || a == b) continue;   // bad line → skip
+
+            string key   = line.substr(0, a);
+            string value = line.substr(a + 3, b - (a + 3));
+            long long exp = 0;
+            try { exp = stoll(line.substr(b + 3)); }
+            catch (...) { continue; }       // bad expiry → skip line
+
             set(key, value);
-            if (ss >> exp) expiry[key] = exp;
+            if (exp > 0) expiry[key] = exp;
             count++;
         }
         return "Loaded " + to_string(count) + " keys ← " + file;
     }
 
-    // STATS ──────────────────────────────────────────────────────────────────
-    void stats() {
-        cout << "\n  ┌─ KVault Stats ─────────────────┐\n";
-        cout << "  │  Keys stored   : " << cache.size() << "/" << capacity << "\n";
-        cout << "  │  Keys with TTL : " << expiry.size() << "\n";
-        cout << "  └────────────────────────────────┘\n\n";
+        // STATS ──────────────────────────────────────────────────────────────────
+    string stats() {
+        string s = "  ┌─ KVault Stats ─────────────────┐\n";
+        s += "  │  Keys stored   : " + to_string(cache.size()) + "/" + to_string(capacity) + "\n";
+        s += "  │  Keys with TTL : " + to_string(expiry.size()) + "\n";
+        s += "  └────────────────────────────────┘";
+        return s;
     }
 };
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
-void help() {
-    cout << "\n"
+string helpText() {
+    return "\n"
     "  SET  <key> <value>    Store a key-value pair\n"
     "  GET  <key>            Retrieve a value\n"
     "  DEL  <key>            Delete a key\n"
@@ -167,22 +190,61 @@ void help() {
     "  TTLR <key>            Check time remaining\n"
     "  EXISTS <key>          Check if key exists (1/0)\n"
     "  KEYS                  List all keys\n"
+    "  CLEAN                 Remove all expired keys\n"
     "  SAVE                  Persist to kvault.db\n"
     "  LOAD                  Load from kvault.db\n"
     "  STATS                 Show store stats\n"
     "  HELP                  This menu\n"
-    "  EXIT                  Quit\n\n";
+    "  EXIT                  Quit\n";
+}
+
+// keys() ke end me extra newline hota hai, usko hata dete hain
+string trimNewline(string s) {
+    while (!s.empty() && s.back() == '\n') s.pop_back();
+    return s;
+}
+
+// Ek command line leta hai, store pe chalata hai, jawab STRING me return karta hai.
+// quit = true ho jaye to caller ko pata chal jaata hai ki connection/loop band karna hai.
+string execute(KVault& store, const string& line, bool& quit) {
+    istringstream ss(line);
+    string cmd; ss >> cmd;
+    for (auto& c : cmd) c = std::toupper(c);
+
+    if (cmd == "EXIT" || cmd == "QUIT") { quit = true; return "Goodbye!"; }
+    if (cmd == "HELP")   return trimNewline(helpText());
+    if (cmd == "STATS")  return store.stats();
+    if (cmd == "KEYS")   return trimNewline(store.keys());
+    if (cmd == "CLEAN")  return "Removed " + to_string(store.cleanExpired()) + " expired keys";
+    if (cmd == "SAVE")   return store.save();
+    if (cmd == "LOAD")   return store.load();
+    if (cmd == "GET")    { string k; ss >> k; return store.get(k); }
+    if (cmd == "DEL")    { string k; ss >> k; return store.del(k); }
+    if (cmd == "EXISTS") { string k; ss >> k; return store.exists(k); }
+    if (cmd == "TTLR")   { string k; ss >> k; return store.ttlRemaining(k); }
+    if (cmd == "SET") {
+        string k, v; ss >> k; getline(ss, v);
+        if (!v.empty() && v[0] == ' ') v = v.substr(1);
+        if (k.empty() || v.empty()) return "(error) SET <key> <value>";
+        return store.set(k, v);
+    }
+    if (cmd == "TTL") {
+        string k; int sec = 0; ss >> k >> sec;
+        if (k.empty() || sec <= 0) return "(error) TTL <key> <seconds>";
+        return store.setTTL(k, sec);
+    }
+    return "(error) Unknown command. Type HELP";
 }
 
 int main() {
     KVault store(50);
     cout << "\n"
     "  ╔═══════════════════════════════╗\n"
-    "  ║   KVault  v1.0                ║\n"
+    "  ║   KVault  v1.1                ║\n"
     "  ║   In-Memory Key-Value Store   ║\n"
     "  ║   Inspired by Redis           ║\n"
     "  ╚═══════════════════════════════╝\n";
-    help();
+    cout << helpText();
 
     string line;
     while (true) {
@@ -190,32 +252,10 @@ int main() {
         if (!getline(cin, line)) break;
         if (line.empty()) continue;
 
-        istringstream ss(line);
-        string cmd; ss >> cmd;
-        for (auto& c : cmd) c = std::toupper(c);
-
-        if (cmd == "EXIT" || cmd == "QUIT") { cout << "Goodbye!\n"; break; }
-        else if (cmd == "HELP")   { help(); }
-        else if (cmd == "STATS")  { store.stats(); }
-        else if (cmd == "KEYS")   { cout << store.keys(); }
-        else if (cmd == "SAVE")   { cout << store.save() << "\n"; }
-        else if (cmd == "LOAD")   { cout << store.load() << "\n"; }
-        else if (cmd == "GET")    { string k; ss >> k; cout << store.get(k) << "\n"; }
-        else if (cmd == "DEL")    { string k; ss >> k; cout << store.del(k) << "\n"; }
-        else if (cmd == "EXISTS") { string k; ss >> k; cout << store.exists(k) << "\n"; }
-        else if (cmd == "SET") {
-            string k, v; ss >> k; getline(ss, v);
-            if (!v.empty() && v[0]==' ') v = v.substr(1);
-            cout << (k.empty()||v.empty() ? "(error) SET <key> <value>" : store.set(k,v)) << "\n";
-        }
-        else if (cmd == "TTL") {
-            string k; int sec; ss >> k >> sec;
-            cout << store.setTTL(k, sec) << "\n";
-        }
-        else if (cmd == "TTLR") {
-            string k; ss >> k; cout << store.ttlRemaining(k) << "\n";
-        }
-        else { cout << "(error) Unknown command. Type HELP\n"; }
+        bool quit = false;
+        string reply = execute(store, line, quit);
+        cout << reply << "\n";
+        if (quit) break;
     }
     return 0;
 }
