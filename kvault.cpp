@@ -308,7 +308,7 @@ void runServer(KVault& store, int port) {
     if (::bind(serverFd, (sockaddr*)&addr, sizeof(addr)) < 0) {
         perror("bind"); close(serverFd); return;
     }
-    if (listen(serverFd, 10) < 0) {
+    if (listen(serverFd, 128) < 0) {
         perror("listen"); close(serverFd); return;
     }
     cout << "KVault server listening on port " << port << "\n";
@@ -327,7 +327,7 @@ void runServer(KVault& store, int port) {
 }
 
 int main(int argc, char* argv[]) {
-    KVault store(50);
+    KVault store(100000);
 
     if (argc > 1 && string(argv[1]) == "server") {
         runServer(store, 6380);
