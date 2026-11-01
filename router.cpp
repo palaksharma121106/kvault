@@ -54,20 +54,32 @@ bool askNode(int fd, string& buf, const string& line, string& reply) {
     return sendAll(fd, line + "\n") && readLine(fd, buf, reply);
 }
 
+// kya ye jawab "key mili nahi" jaisa hai? Tab replica bhi try karenge.
+bool looksMissing(const string& cmd, const string& reply) {
+    if (cmd == "GET")    return reply == "(nil)";
+    if (cmd == "EXISTS") return reply == "0";
+    return false;
+}
+
+// Node se baat karo. Fail ho to connection dobara jodke ek baar aur try karo.
+// false = node sach me down hai.
+bool askNodeRetry(const string& name, map<string, int>& nodeFd, map<string, string>& nodeBuf,
+                  const map<string, int>& nodePorts, const string& line, string& reply) {
+    int& fd = nodeFd[name];
+    if (fd >= 0 && askNode(fd, nodeBuf[name], line, reply)) return true;
+
+    if (fd >= 0) close(fd);                 // toota hua connection band karo
+    nodeBuf[name].clear();
+    fd = connectTo(nodePorts.at(name));     // naya connection try
+    if (fd < 0) return false;               // connect hi nahi hua = node down
+    return askNode(fd, nodeBuf[name], line, reply);
+}
+
 void handleClient(int clientFd, const map<string, int>& nodePorts, const HashRing& ring) {
-    // Is client ke liye har node se apna alag connection (isliye router me lock nahi chahiye)
     map<string, int> nodeFd;
     map<string, string> nodeBuf;
-    for (auto& [name, port] : nodePorts) {
-        int fd = connectTo(port);
-        if (fd < 0) {
-            sendAll(clientFd, "(error) cannot reach " + name + "\n");
-            for (auto& [n, f] : nodeFd) close(f);
-            close(clientFd);
-            return;
-        }
-        nodeFd[name] = fd;
-    }
+    for (auto& [name, port] : nodePorts)
+        nodeFd[name] = connectTo(port);     // -1 matlab node abhi down hai, koi baat nahi
 
     string buffer, line;
     while (readLine(clientFd, buffer, line)) {
@@ -87,30 +99,36 @@ void handleClient(int clientFd, const map<string, int>& nodePorts, const HashRin
             continue;
         }
 
-                vector<string> owners = ring.getNodes(key, REPLICAS);   // [primary, replica]
+        vector<string> owners = ring.getNodes(key, REPLICAS);
         bool isWrite = (cmd == "SET" || cmd == "DEL" || cmd == "TTL");
-
         string reply;
+
         if (isWrite) {
-            // write: dono copies pe bhejo, client ko pehla successful jawab do
+            // dono copies pe likho; jo node down hai usse skip, client ko pehla successful jawab
             bool gotReply = false;
             for (const string& n : owners) {
                 string r;
-                if (askNode(nodeFd[n], nodeBuf[n], line, r) && !gotReply) {
+                if (askNodeRetry(n, nodeFd, nodeBuf, nodePorts, line, r) && !gotReply) {
                     reply = r;
                     gotReply = true;
                 }
             }
             if (!gotReply) reply = "(error) all replicas down";
         } else {
-            // read: abhi sirf primary se (Step 8 me fallback)
-            if (!askNode(nodeFd[owners[0]], nodeBuf[owners[0]], line, reply))
-                reply = "(error) " + owners[0] + " is down";
+            // read: primary se, na mile/down ho to replica se
+            bool answered = false;
+            for (const string& n : owners) {
+                string r;
+                if (!askNodeRetry(n, nodeFd, nodeBuf, nodePorts, line, r)) continue;  // down, agla
+                if (!answered) { reply = r; answered = true; }       // kam se kam ek jawab mila
+                if (!looksMissing(cmd, r)) { reply = r; break; }     // asli jawab mil gaya
+            }
+            if (!answered) reply = "(error) all replicas down";
         }
         sendAll(clientFd, reply + "\n");
     }
 
-    for (auto& [n, f] : nodeFd) close(f);
+    for (auto& [n, f] : nodeFd) if (f >= 0) close(f);
     close(clientFd);
 }
 
