@@ -9,7 +9,9 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include "hashring.h"
+
 using namespace std;
+const size_t REPLICAS = 2;   // har key ki kitni copies
 
 int connectTo(int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -47,6 +49,11 @@ bool readLine(int fd, string& buffer, string& line) {
     return true;
 }
 
+// ek node ko command bhejo aur uska ek-line jawab lo. Fail ho to false.
+bool askNode(int fd, string& buf, const string& line, string& reply) {
+    return sendAll(fd, line + "\n") && readLine(fd, buf, reply);
+}
+
 void handleClient(int clientFd, const map<string, int>& nodePorts, const HashRing& ring) {
     // Is client ke liye har node se apna alag connection (isliye router me lock nahi chahiye)
     map<string, int> nodeFd;
@@ -80,11 +87,25 @@ void handleClient(int clientFd, const map<string, int>& nodePorts, const HashRin
             continue;
         }
 
-        string node = ring.getNode(key);     // ring batayegi kaun si node
+                vector<string> owners = ring.getNodes(key, REPLICAS);   // [primary, replica]
+        bool isWrite = (cmd == "SET" || cmd == "DEL" || cmd == "TTL");
+
         string reply;
-        if (!sendAll(nodeFd[node], line + "\n") || !readLine(nodeFd[node], nodeBuf[node], reply)) {
-            sendAll(clientFd, "(error) " + node + " is down\n");
-            continue;                         // asli failure handling Step 8 me
+        if (isWrite) {
+            // write: dono copies pe bhejo, client ko pehla successful jawab do
+            bool gotReply = false;
+            for (const string& n : owners) {
+                string r;
+                if (askNode(nodeFd[n], nodeBuf[n], line, r) && !gotReply) {
+                    reply = r;
+                    gotReply = true;
+                }
+            }
+            if (!gotReply) reply = "(error) all replicas down";
+        } else {
+            // read: abhi sirf primary se (Step 8 me fallback)
+            if (!askNode(nodeFd[owners[0]], nodeBuf[owners[0]], line, reply))
+                reply = "(error) " + owners[0] + " is down";
         }
         sendAll(clientFd, reply + "\n");
     }

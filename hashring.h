@@ -2,6 +2,8 @@
 #include <map>
 #include <string>
 #include <cstdint>
+#include <vector>
+#include <algorithm>
 
 class HashRing {
     std::map<uint64_t, std::string> ring;   // ring ki jagah -> server ka naam
@@ -43,6 +45,20 @@ public:
         auto it = ring.lower_bound(hashKey(key));
         if (it == ring.end()) it = ring.begin();   // ring ghoom ke shuru pe aa gaya
         return it->second;
+    }
+
+        // key ke liye n alag-alag physical servers: pehla = primary, baaki replicas
+    std::vector<std::string> getNodes(const std::string& key, size_t n) const {
+        std::vector<std::string> result;
+        if (ring.empty()) return result;
+        auto it = ring.lower_bound(hashKey(key));
+        for (size_t steps = 0; steps < ring.size() && result.size() < n; steps++) {
+            if (it == ring.end()) it = ring.begin();            // ring ghoom gaya
+            if (std::find(result.begin(), result.end(), it->second) == result.end())
+                result.push_back(it->second);                   // sirf naya server add karo
+            ++it;
+        }
+        return result;
     }
 
     bool empty() const { return ring.empty(); }
