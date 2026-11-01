@@ -6,6 +6,11 @@
 #include <chrono>
 #include <sstream>
 #include <cctype>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <csignal>
 
 using namespace std;
 using namespace chrono;
@@ -178,6 +183,8 @@ public:
         s += "  └────────────────────────────────┘";
         return s;
     }
+
+   
 };
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
@@ -236,8 +243,83 @@ string execute(KVault& store, const string& line, bool& quit) {
     return "(error) Unknown command. Type HELP";
 }
 
-int main() {
+// ── TCP SERVER ───────────────────────────────────────────────────────────────
+
+bool sendAll(int fd, const string& data) {
+    size_t sent = 0;
+    while (sent < data.size()) {
+        ssize_t n = send(fd, data.c_str() + sent, data.size() - sent, 0);
+        if (n <= 0) return false;
+        sent += n;
+    }
+    return true;
+}
+
+void runServer(KVault& store, int port) {
+    signal(SIGPIPE, SIG_IGN);   // client beech me kat jaye to server crash na ho
+
+    // 1. socket banao
+    int serverFd = socket(AF_INET, SOCK_STREAM, 0);
+    if (serverFd < 0) { perror("socket"); return; }
+
+    // 2. restart karne pe "Address already in use" na aaye
+    int opt = 1;
+    setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    // 3. address bharo
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(port);
+
+    // 4. bind + listen
+    if (::bind(serverFd, (sockaddr*)&addr, sizeof(addr)) < 0) {
+        perror("bind"); close(serverFd); return;
+    }
+    if (listen(serverFd, 10) < 0) {
+        perror("listen"); close(serverFd); return;
+    }
+    cout << "KVault server listening on port " << port << "\n";
+
+    // 5. clients ka intezaar (ek time pe ek client)
+    while (true) {
+        int clientFd = accept(serverFd, nullptr, nullptr);
+        if (clientFd < 0) { perror("accept"); continue; }
+        cout << "Client connected\n";
+
+        string buffer;          
+        char tmp[1024];
+        bool quit = false;
+
+        while (!quit) {
+            ssize_t n = recv(clientFd, tmp, sizeof(tmp), 0);
+            if (n <= 0) break;              // 0 = client gaya, -1 = error
+            buffer.append(tmp, n);
+
+            // jab tak buffer me poori line (\n) hai, commands nikalte raho
+            size_t pos;
+            while (!quit && (pos = buffer.find('\n')) != string::npos) {
+                string line = buffer.substr(0, pos);
+                buffer.erase(0, pos + 1);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (line.empty()) continue;
+
+                string reply = execute(store, line, quit);
+                if (!sendAll(clientFd, reply + "\n")) quit = true;
+            }
+        }
+        close(clientFd);
+        cout << "Client disconnected\n";
+    }
+}
+
+int main(int argc, char* argv[]) {
     KVault store(50);
+
+    if (argc > 1 && string(argv[1]) == "server") {
+        runServer(store, 6380);
+        return 0;
+    }
     cout << "\n"
     "  ╔═══════════════════════════════╗\n"
     "  ║   KVault  v1.1                ║\n"
