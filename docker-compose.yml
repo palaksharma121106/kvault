@@ -1,0 +1,28 @@
+services:
+  node1:
+    build: .
+    image: kvault:latest
+    command: ["./kvault", "server", "6379"]
+    ports:
+      - "6381:6379"        # sirf benchmark ke liye: 1 node seedha naapne ke liye
+
+  node2:
+    build: .
+    image: kvault:latest
+    command: ["./kvault", "server", "6379"]
+
+  node3:
+    build: .
+    image: kvault:latest
+    command: ["./kvault", "server", "6379"]
+
+  router:
+    build: .
+    image: kvault:latest
+    command: ["./router", "node1=node1:6379", "node2=node2:6379", "node3=node3:6379"]
+    ports:
+      - "6380:6380"
+    depends_on:
+      - node1
+      - node2
+      - node3
