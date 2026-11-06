@@ -19,6 +19,7 @@ services:
   router:
     build: .
     image: kvault:latest
+    tty: true
     command: ["./router", "node1=node1:6379", "node2=node2:6379", "node3=node3:6379"]
     ports:
       - "6380:6380"
