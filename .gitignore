@@ -1,2 +1,8 @@
 kvault
 kvault.db
+bench
+ring_test
+router
+kvault
+kvault.db
+.vscode/
