@@ -6,3 +6,7 @@ router
 kvault
 kvault.db
 .vscode/
+bench
+router
+ring_test
+.vscode/
